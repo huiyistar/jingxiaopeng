@@ -297,20 +297,24 @@
   //   modal.classList.add('active');
   // }
 
-  function openPlayer(video) {
+function openPlayer(video) {
   const bv = video.bvid;
   const page = video.page || 1;
-  const cidParam = video.cid ? `&cid=${video.cid}` : '';
-  const embedUrl = `https://player.bilibili.com/player.html?bvid=${bv}&page=${page}${cidParam}&autoplay=1`;
   const pageUrl = `https://www.bilibili.com/video/${bv}?p=${page}`;
 
-  // 手机端：直接跳转，不再弹窗
-  if (window.innerWidth <= 768 || /Mobi|Android|iPhone/i.test(navigator.userAgent)) {
-    window.open(pageUrl, '_blank');
-    return;
+  // 判断移动端
+  const isMobile = window.innerWidth <= 768 || /Mobi|Android|iPhone/i.test(navigator.userAgent);
+
+  let embedUrl;
+  if (isMobile) {
+    // 移动端：使用 Blackboard 播放器 + page 参数，避免 cid 被覆盖
+    embedUrl = `https://www.bilibili.com/blackboard/html5mobileplayer.html?bvid=${bv}&page=${page}&autoplay=1&high_quality=1`;
+  } else {
+    // PC 端：使用标准播放器 + cid 精确指定分P
+    const cidParam = video.cid ? `&cid=${video.cid}` : '';
+    embedUrl = `https://player.bilibili.com/player.html?bvid=${bv}&page=${page}${cidParam}&autoplay=1`;
   }
 
-  // PC 端：正常弹窗播放
   iframe.src = embedUrl;
   externalLink.href = pageUrl;
   modal.classList.add('active');
