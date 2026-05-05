@@ -1,0 +1,11 @@
+# 添加新视频（自动追加，已有封面跳过）
+python generate_full.py BV1xxxxxx
+
+# 强制覆盖（舍弃之前所有视频数据）
+python generate_full.py BV1xxxxxx --overwrite
+
+# 保留下载的临时视频
+python generate_full.py BV1xxxxxx --keep-video
+
+#截取帧相对于末尾的偏移秒数，默认 -1（最后一秒）。例如 -2 表示倒数第二秒，0 表示最后一帧（末尾）。
+python generate_full.py BV1xx --offset -2

@@ -5,14 +5,12 @@ import shutil
 import requests
 import json
 import time
+import argparse
 from pathlib import Path
 
-# ========== 配置区域 ==========
-BVID = "BV1oT4y1971w"          # 你的视频 BV 号
-IMAGES_DIR = "images"           # 封面输出目录
-OUTPUT_JS = "videos.js"         # 最终数据文件
-TEMP_DIR = "temp_videos"        # 临时视频存放目录（完成后自动删除）
-# ==============================
+IMAGES_DIR = "images"
+OUTPUT_JS = "videos.js"
+TEMP_DIR = "temp_videos"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -20,7 +18,7 @@ HEADERS = {
 }
 
 def fetch_pagelist(bvid):
-    """获取全部分P的 page, part, cid"""
+    """获取分P列表"""
     url = "https://api.bilibili.com/x/player/pagelist"
     params = {"bvid": bvid, "jsonp": "jsonp"}
     resp = requests.get(url, params=params, headers=HEADERS)
@@ -29,57 +27,53 @@ def fetch_pagelist(bvid):
         raise Exception(f"获取分P列表失败: {data['message']}")
     return data["data"]
 
-def download_part(page):
-    """
-    用 yt-dlp 下载指定分P的视频，返回视频文件路径。
-    下载到 TEMP_DIR/p{page}/ 目录，文件名自动生成。
-    """
-    video_url = f"https://www.bilibili.com/video/{BVID}?p={page}"
-    output_dir = Path(TEMP_DIR) / f"p{page}"
-    output_dir.mkdir(parents=True, exist_ok=True)
+def download_part(bvid, page):
+    """下载单个分P视频，返回视频文件路径"""
+    video_url = f"https://www.bilibili.com/video/{bvid}?p={page}"
+    out_dir = Path(TEMP_DIR) / bvid / f"p{page}"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 输出模板：直接以页码命名，便于查找
-    output_template = str(output_dir / f"p{page}.%(ext)s")
+    output_template = str(out_dir / f"{bvid}_p{page}.%(ext)s")
 
     cmd = [
         "yt-dlp",
         video_url,
-        "-o", output_template,          # 输出路径模板
-        "--no-playlist",                # 只下载这个分P（不下载整个播放列表）
-        "--merge-output-format", "mp4", # 合并为 mp4
-        "--quiet",                      # 减少日志输出（可选）
+        "-o", output_template,
+        "--no-playlist",
+        "--merge-output-format", "mp4",
+        "--quiet",
         "--no-warnings"
     ]
 
-    print(f"  📥 正在下载分P {page}...")
+    print(f"  📥 下载分P {page} ...")
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
-        print(f"  ❌ yt-dlp 下载失败: {e.stderr}")
+        print(f"  ❌ 下载失败: {e.stderr}")
         return None
 
-    # 查找下载的视频文件
-    video_files = list(output_dir.glob("p{}.mp4".format(page))) + \
-                  list(output_dir.glob("p{}.*.mp4".format(page))) + \
-                  list(output_dir.glob("*.mp4")) + \
-                  list(output_dir.glob("*.mkv"))
+    video_files = list(out_dir.glob(f"{bvid}_p{page}*.mp4")) + \
+                  list(out_dir.glob(f"{bvid}_p{page}*.mkv"))
     if not video_files:
-        print(f"  ⚠️ 未找到视频文件，可能下载失败。")
+        print(f"  ⚠️ 未找到视频文件")
         return None
     return video_files[0]
 
-def capture_last_frame(video_path, output_image):
-    """用 ffmpeg 截取视频最后一秒的第一帧，保存为图片。"""
+def capture_frame(video_path, output_image, offset=-1.0):
+    """
+    用 ffmpeg 截取一帧
+    offset: 相对于视频末尾的偏移秒数，例如 -1 表示最后一秒
+    """
     cmd = [
         "ffmpeg",
-        "-sseof", "-1",
+        "-sseof", str(offset),
         "-i", str(video_path),
         "-frames:v", "1",
-        "-q:v", "2",           # JPG 高质量
-        "-y",                  # 覆盖已有文件
+        "-q:v", "2",
+        "-y",
         str(output_image)
     ]
-    print(f"  🎞️ 截取最后一帧 → {output_image}")
+    print(f"  🎞️ 截取封面（偏移 {offset}s） → {output_image}")
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
         return True
@@ -87,129 +81,182 @@ def capture_last_frame(video_path, output_image):
         print(f"  ❌ 截帧失败: {e.stderr}")
         return False
 
-def process_single_page(p_info):
-    """处理一个分P：下载、截帧，返回 img 路径"""
+def process_single_page(p_info, bvid, fallback_img, offset):
+    """处理一个分P：检查封面 -> 下载 -> 截帧"""
     page = p_info["page"]
-    img_path = f"{IMAGES_DIR}/p{page}.jpg"
+    img_file = f"{bvid}_p{page}.jpg"
+    img_path = os.path.join(IMAGES_DIR, img_file)
+
     if os.path.exists(img_path):
-        print(f"  📷 分P {page} 封面已存在，跳过处理。")
+        print(f"  ✅ 封面已存在，跳过: {img_path}")
         return img_path
 
-    video_file = download_part(page)
+    video_file = download_part(bvid, page)
     if video_file is None:
-        return None  # 失败，后续使用 fallback
+        print(f"  ⚠️ 下载失败，使用占位封面")
+        return fallback_img
 
     os.makedirs(IMAGES_DIR, exist_ok=True)
-    success = capture_last_frame(video_file, img_path)
-
-    # 删除临时视频文件
-    video_file.unlink(missing_ok=True)
-    # 删除临时目录（如果为空）
-    parent_dir = video_file.parent
-    try:
-        shutil.rmtree(parent_dir)
-    except OSError:
-        pass
+    success = capture_frame(video_file, img_path, offset)
 
     if not success:
-        # 截帧失败，删除可能生成的不完整图片
         Path(img_path).unlink(missing_ok=True)
-        return None
+        return fallback_img
     return img_path
 
-def generate_videos_js(pages_data):
-    """生成 videos.js 文件内容"""
-    lines = [
-        "// 自动生成，每P封面取自最后一秒",
-        "const videos = ["
-    ]
-    for p in pages_data:
-        title = p["part"].replace('"', '\\"').replace('\n', ' ')
-        img = p["img"]
-        lines.append(
-            '  {{ title: "{}", img: "{}", bvid: "{}", page: {}, cid: "{}" }},'.format(
-                title, img, BVID, p["page"], p["cid"]
-            )
-        )
-    lines.append("];")
-    return "\n".join(lines)
+def generate_video_objects(pagelist, bvid, fallback_img):
+    """生成视频数据列表（字典）"""
+    videos = []
+    for p in pagelist:
+        page = p["page"]
+        img_file = f"{bvid}_p{page}.jpg"
+        img_path = os.path.join(IMAGES_DIR, img_file)
+        # 统一使用正斜杠
+        img_path = img_path.replace("\\", "/")
+        if not os.path.exists(img_path):
+            img_path = fallback_img.replace("\\", "/")
+        videos.append({
+            "title": p["part"],
+            "img": img_path,
+            "bvid": bvid,
+            "page": page,
+            "cid": p["cid"]
+        })
+    return videos
 
-def download_fallback_cover():
-    """如果某个分P失败，使用视频主封面作为 fallback.jpg"""
-    fallback_img = f"{IMAGES_DIR}/fallback.jpg"
+def read_existing_videos(filepath):
+    """读出现有 videos.js 中的视频数组"""
+    if not os.path.exists(filepath):
+        return []
+    with open(filepath, "r", encoding="utf-8") as f:
+        content = f.read()
+    import re
+    match = re.search(r"const\s+videos\s*=\s*(\[[\s\S]*?\]);", content)
+    if not match:
+        print("⚠️ 无法解析 videos.js，将备份原文件并重建。")
+        shutil.copy(filepath, filepath + ".backup")
+        return None
+    try:
+        videos = json.loads(match.group(1))
+        return videos
+    except json.JSONDecodeError:
+        print("⚠️ videos.js 格式错误，备份后重建。")
+        shutil.copy(filepath, filepath + ".backup")
+        return None
+
+def merge_videos(old_videos, new_videos):
+    """合并去重（依据 bvid + page）"""
+    merged = []
+    seen = set()
+    for v in old_videos:
+        if "bvid" in v and "page" in v:
+            merged.append(v)
+            seen.add((v["bvid"], v["page"]))
+    for v in new_videos:
+        key = (v["bvid"], v["page"])
+        if key not in seen:
+            merged.append(v)
+            seen.add(key)
+    return merged
+
+def write_videos_js(videos, filepath):
+    """写入 videos.js 文件"""
+    js_array = json.dumps(videos, ensure_ascii=False, indent=2)
+    content = f"// 视频导航数据\nconst videos = {js_array};\n"
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(content)
+    print(f"✅ 已写入 {filepath}，共 {len(videos)} 个视频")
+
+def download_fallback_cover(bvid):
+    """下载视频主封面作为占位图"""
+    fallback_dir = os.path.join(IMAGES_DIR, "fallback")
+    os.makedirs(fallback_dir, exist_ok=True)
+    fallback_img = os.path.join(fallback_dir, f"{bvid}_fallback.jpg")
     if os.path.exists(fallback_img):
-        return
-    print("📸 正在下载通用占位封面...")
-    api_url = f"https://api.bilibili.com/x/web-interface/view?bvid={BVID}"
+        return fallback_img
+
+    api_url = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
     resp = requests.get(api_url, headers=HEADERS)
     data = resp.json()
     if data["code"] == 0:
         pic_url = data["data"]["pic"]
         img_data = requests.get(pic_url, headers=HEADERS).content
-        os.makedirs(IMAGES_DIR, exist_ok=True)
         with open(fallback_img, "wb") as f:
             f.write(img_data)
-        print(f"✅ 占位封面已保存: {fallback_img}")
+        print(f"📸 占位封面: {fallback_img}")
+        return fallback_img
     else:
-        # 创建纯灰图片作为应急
         try:
             from PIL import Image
             img = Image.new('RGB', (640, 360), color='gray')
-            os.makedirs(IMAGES_DIR, exist_ok=True)
             img.save(fallback_img)
-            print(f"生成灰色占位封面: {fallback_img}")
+            print(f"📸 灰色占位封面: {fallback_img}")
+            return fallback_img
         except ImportError:
-            # 如果没有 Pillow，复制一张任意图片或放弃
-            pass
+            print("❌ 无法获取占位封面，请手动放入", fallback_img)
+            return None
 
 def main():
-    # 检查工具
+    parser = argparse.ArgumentParser(description="为 B 站视频自动生成封面和 videos.js")
+    parser.add_argument("bvid", help="视频 BV 号")
+    parser.add_argument("--offset", type=float, default=-1.0,
+                        help="截取帧相对于视频末尾的偏移秒数，默认 -1（最后一秒）。例如 0 表示最后一帧（末尾），-2 表示倒数第二秒。")
+    parser.add_argument("--keep-video", action="store_true",
+                        help="保留下载的临时视频（默认清理）")
+    parser.add_argument("--overwrite", action="store_true",
+                        help="覆盖现有 videos.js，否则追加")
+    args = parser.parse_args()
+
     if shutil.which("ffmpeg") is None:
         sys.exit("❌ 未找到 ffmpeg，请先安装。")
     if shutil.which("yt-dlp") is None:
         sys.exit("❌ 未找到 yt-dlp，请用 pip install yt-dlp 安装。")
 
-    print(f"🚀 获取视频 {BVID} 的分P列表...")
-    pagelist = fetch_pagelist(BVID)
+    bvid = args.bvid
+    print(f"🚀 获取 {bvid} 的分P列表...")
+    try:
+        pagelist = fetch_pagelist(bvid)
+    except Exception as e:
+        sys.exit(str(e))
     total = len(pagelist)
     print(f"共 {total} 个分P\n")
 
-    # 下载占位封面备用
-    download_fallback_cover()
-    fallback_img = f"{IMAGES_DIR}/fallback.jpg"
+    fallback_img = download_fallback_cover(bvid)
+    if fallback_img is None:
+        sys.exit("无法获取占位封面，退出。")
 
     Path(TEMP_DIR).mkdir(exist_ok=True)
 
-    processed = []
     for idx, p in enumerate(pagelist, 1):
-        print(f"[{idx}/{total}] 处理分P {p['page']}: {p['part']}")
-        img = process_single_page(p)
-        if img is None:
-            print(f"  ⚠️ 分P {p['page']} 处理失败，使用占位封面。")
-            img = fallback_img
-        processed.append({
-            "part": p["part"],
-            "img": img,
-            "page": p["page"],
-            "cid": p["cid"]
-        })
+        print(f"[{idx}/{total}] 分P {p['page']}: {p['part']}")
+        process_single_page(p, bvid, fallback_img, args.offset)
         print("")
-        # 可选延迟，避免请求过快
-        time.sleep(0.5)
 
-    # 清理临时目录
-    shutil.rmtree(TEMP_DIR, ignore_errors=True)
+    new_videos = generate_video_objects(pagelist, bvid, fallback_img)
 
-    # 生成 videos.js
-    js_content = generate_videos_js(processed)
-    with open(OUTPUT_JS, "w", encoding="utf-8") as f:
-        f.write(js_content)
+    output_path = Path(OUTPUT_JS)
+    if output_path.exists() and not args.overwrite:
+        old_videos = read_existing_videos(OUTPUT_JS)
+        if old_videos is None:
+            print("⚠️ 无法解析，将重建 videos.js")
+            final_videos = new_videos
+        else:
+            final_videos = merge_videos(old_videos, new_videos)
+            print(f"🔄 追加 {len(new_videos)} 个视频，合并后总计 {len(final_videos)}")
+    else:
+        final_videos = new_videos
+        if output_path.exists():
+            print("🔄 --overwrite 启用，覆盖原 videos.js")
 
-    print(f"✅ 全部完成！")
-    print(f"   - 生成 {total} 条视频数据 → {OUTPUT_JS}")
-    print(f"   - 封面图片保存在 {IMAGES_DIR}/ 文件夹中")
-    print(f"   - 失败分P已使用 fallback.jpg 代替")
-    print(f"请将 {IMAGES_DIR} 文件夹和 {OUTPUT_JS} 放入仓库根目录，推送即可。")
+    write_videos_js(final_videos, OUTPUT_JS)
+
+    if not args.keep_video:
+        shutil.rmtree(TEMP_DIR, ignore_errors=True)
+        print("🗑️ 已删除临时视频。")
+    else:
+        print(f"📂 临时视频保留在: {TEMP_DIR}/")
+
+    print("\n✅ 全部完成！")
 
 if __name__ == "__main__":
     main()
