@@ -87,7 +87,7 @@ python generate_full.py BV1oT4y1971w
 最好还是本地用命令行，  
 配置好下载git客户端，  （[下载git客户端](https://git-scm.com/install/windows)）
 在项目文件夹下：  
-·-`git init` 初始化  
+-`git init` 初始化  
 -`git add .`添加所有文件
 -`git commit -m "提交记录"`  添加提交记录
 -`git push origin main`  更新到github远程仓库
